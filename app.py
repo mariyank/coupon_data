@@ -10,8 +10,10 @@ st.set_page_config(page_title="Muziris '26 Admin", page_icon="🎪", layout="cen
 
 # --- DATABASE CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-# We load the members list to validate IDs when logging sales
+
+# We load the members list and immediately strip out any ".0" decimals!
 member_df = conn.read(worksheet="Members", ttl=600)
+member_df['ID'] = member_df['ID'].astype(str).str.split('.').str[0].str.strip()
 
 # --- HELPER: LOAD LOGO ---
 def load_image_base64(img_name):
@@ -49,9 +51,7 @@ with tab1:
         
         with st.form("daily_log_form", clear_on_submit=True):
             head_id = st.text_input("👑 Your Head ID (Mandatory)", placeholder="e.g., 1001")
-            
             st.divider()
-            
             student_id = st.text_input("👤 Selling Student ID (Mandatory)", placeholder="e.g., 1005 (Use your own ID if you made the sale)")
             
             col1, col2 = st.columns(2)
@@ -72,9 +72,9 @@ with tab1:
                     clean_head = head_id.strip()
                     clean_student = student_id.strip()
                     
-                    # 2. Verify IDs exist in the Members sheet
-                    head_match = member_df[member_df['ID'].astype(str).str.split('.').str[0] == clean_head]
-                    student_match = member_df[member_df['ID'].astype(str).str.split('.').str[0] == clean_student]
+                    # 2. Verify IDs exist (Cleaned matching logic)
+                    head_match = member_df[member_df['ID'] == clean_head]
+                    student_match = member_df[member_df['ID'] == clean_student]
                     
                     if head_match.empty:
                         st.error(f"❌ Head ID {clean_head} not found in database.")
@@ -108,7 +108,9 @@ with tab2:
             logs_df = conn.read(worksheet="Daily_Logs", ttl=0)
             
             if not logs_df.empty:
-                # Ensure columns are numeric
+                # CLEAN UP GOOGLE SHEETS QUIRKS FIRST!
+                logs_df['Student ID'] = logs_df['Student ID'].astype(str).str.split('.').str[0].str.strip()
+                logs_df['Head ID'] = logs_df['Head ID'].astype(str).str.split('.').str[0].str.strip()
                 logs_df['Coupons Sold'] = pd.to_numeric(logs_df['Coupons Sold'], errors='coerce').fillna(0).astype(int)
                 logs_df['Donations'] = pd.to_numeric(logs_df['Donations'], errors='coerce').fillna(0).astype(int)
                 
@@ -121,16 +123,14 @@ with tab2:
                     'Timestamp': 'max' # Get latest entry time for tie-breakers
                 }).reset_index()
                 
-                # Fetch Names from member_df
+                # Fetch Names perfectly now
                 student_summary['Student Name'] = student_summary['Student ID'].apply(
-                    lambda x: member_df[member_df['ID'].astype(str).str.split('.').str[0] == str(x)]['Name'].iloc[0] 
-                    if not member_df[member_df['ID'].astype(str).str.split('.').str[0] == str(x)].empty else f"ID: {x}"
+                    lambda x: member_df[member_df['ID'] == x]['Name'].iloc[0] 
+                    if not member_df[member_df['ID'] == x].empty else f"Unknown ({x})"
                 )
                 
-                # Calculate Totals and Sort
                 student_summary['Total (₹)'] = (student_summary['Coupons Sold'] * 100) + student_summary['Donations']
                 student_summary = student_summary.sort_values(by=['Total (₹)', 'Timestamp'], ascending=[False, False]).reset_index(drop=True)
-                
                 st.session_state['leaderboard_data'] = student_summary
                 
                 # ----------------------------------------
@@ -142,13 +142,12 @@ with tab2:
                 }).reset_index()
                 
                 head_summary['Head Name'] = head_summary['Head ID'].apply(
-                    lambda x: member_df[member_df['ID'].astype(str).str.split('.').str[0] == str(x)]['Name'].iloc[0] 
-                    if not member_df[member_df['ID'].astype(str).str.split('.').str[0] == str(x)].empty else f"ID: {x}"
+                    lambda x: member_df[member_df['ID'] == x]['Name'].iloc[0] 
+                    if not member_df[member_df['ID'] == x].empty else f"Unknown ({x})"
                 )
                 
                 head_summary['Total Owed (₹)'] = (head_summary['Coupons Sold'] * 100) + head_summary['Donations']
                 head_summary = head_summary.sort_values(by='Total Owed (₹)', ascending=False).reset_index(drop=True)
-                
                 st.session_state['ledger_data'] = head_summary
                 
             else:
@@ -158,7 +157,6 @@ with tab2:
     if 'leaderboard_data' in st.session_state:
         df = st.session_state['leaderboard_data']
         
-        # The Fire Progress Bar
         TOTAL_TARGET = 2000
         current_sold = df['Coupons Sold'].sum()
         percentage = min((current_sold / TOTAL_TARGET) * 100, 100)
@@ -179,7 +177,6 @@ with tab2:
         st.markdown(progress_html, unsafe_allow_html=True)
         st.divider()
 
-        # The Metallic Podiums
         def make_podium_card(bg_gradient, border_color, text_dark, text_light, emoji, title, name, total, coupons, donations):
             return f"""
             <div style="background: {bg_gradient}; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid {border_color}; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
@@ -193,7 +190,6 @@ with tab2:
         if len(df) > 1: st.markdown(make_podium_card("linear-gradient(135deg, #F8F9FA, #E0E0E0)", "#BDBDBD", "#333333", "#666666", "🥈", "2nd Place", df.iloc[1]["Student Name"], df.iloc[1]["Total (₹)"], df.iloc[1]["Coupons Sold"], df.iloc[1]["Donations"]), unsafe_allow_html=True)
         if len(df) > 2: st.markdown(make_podium_card("linear-gradient(135deg, #FFF0E6, #EBA87A)", "#CD7F32", "#5C3A21", "#8A5A33", "🥉", "3rd Place", df.iloc[2]["Student Name"], df.iloc[2]["Total (₹)"], df.iloc[2]["Coupons Sold"], df.iloc[2]["Donations"]), unsafe_allow_html=True)
 
-        # The Heatmap Top 10 Table
         st.markdown("#### Top 10 Rankings")
         top_10_df = df.head(10).copy()
         display_df = top_10_df[['Student Name', 'Coupons Sold', 'Donations', 'Total (₹)']]
@@ -202,7 +198,6 @@ with tab2:
         
         st.divider()
 
-        # The Individual Search Bar
         with st.expander("🔍 Check Your Specific Stats"):
             search_query = st.text_input("Type your name to find your rank and totals:", placeholder="e.g., Muhammed")
             if search_query:
@@ -224,7 +219,6 @@ with tab3:
     
     if 'ledger_data' in st.session_state:
         ledger = st.session_state['ledger_data']
-        
         display_ledger = ledger[['Head Name', 'Coupons Sold', 'Donations', 'Total Owed (₹)']]
         styled_ledger = display_ledger.style.background_gradient(subset=['Total Owed (₹)'], cmap='Blues').format({"Total Owed (₹)": "₹{:.0f}"})
         
